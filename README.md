@@ -10,7 +10,7 @@ Build a package from its directory with:
 makepkg -si
 ```
 
-Or with `yay`:
+Or with [`yay`](https://github.com/jguer/yay):
 
 ```bash
 yay -Bi <dir>
