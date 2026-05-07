@@ -1,0 +1,260 @@
+From 61c6f93bc56bf1b820070c3eeb533444b49a783a Mon Sep 17 00:00:00 2001
+From: Dreaght <dreaght@icloud.com>
+Date: Wed, 6 May 2026 09:43:15 +0300
+Subject: [PATCH] rpc: add screenshot region command with payload
+
+Support for RPC callers to pass a region coordinates directly instead of opening the built-in interactive selector.
+
+Signed-off-by: Dreaght <dreaght@icloud.com>
+---
+ include/Overlay.hpp        |  5 +++++
+ include/RegionSelector.hpp |  5 +++++
+ include/Rpc.hpp            |  4 ++++
+ src/Overlay.cpp            | 25 +++++++++++++++++++++++++
+ src/RegionSelector.cpp     | 10 ++++++++++
+ src/Rpc.cpp                | 16 ++++++++++++++++
+ src/main.cpp               |  5 +++++
+ 7 files changed, 70 insertions(+)
+
+diff --git a/include/Overlay.hpp b/include/Overlay.hpp
+index 5a43dc9..4560584 100644
+--- a/include/Overlay.hpp
++++ b/include/Overlay.hpp
+@@ -60,6 +60,7 @@ namespace gsr {
+     enum class ScreenshotForceType {
+         NONE,
+         REGION,
++        REGION_EXTERNAL,
+         WINDOW
+     };
+ 
+@@ -97,6 +98,8 @@ namespace gsr {
+         void save_replay_10_min();
+         void take_screenshot();
+         void take_screenshot_region();
++        void take_screenshot_region_external(const std::string &region);
++
+         void take_screenshot_window();
+         void show_notification(const char *str, double timeout_seconds, mgl::Color icon_color, mgl::Color bg_color, NotificationType notification_type, const char *capture_target = nullptr, NotificationLevel notification_level = NotificationLevel::INFO);
+         bool is_open() const;
+@@ -174,6 +177,8 @@ namespace gsr {
+         bool update_compositor_texture(const Monitor &monitor);
+ 
+         void add_region_command(std::vector<const char*> &args, char *region_str, int region_str_size);
++        void add_region_external_command(std::vector<const char *> &args, char *region_str, int region_str_size);
++
+         void add_common_gpu_screen_recorder_args(std::vector<const char*> &args, const RecordOptions &record_options, const std::vector<std::string> &audio_tracks, const std::string &video_bitrate, const char *region, char *region_str, int region_str_size, const std::string &region_area_option, RecordForceType force_type = RecordForceType::NONE);
+ 
+         std::string get_capture_target(const std::string &capture_target, const SupportedCaptureOptions &capture_options);
+diff --git a/include/RegionSelector.hpp b/include/RegionSelector.hpp
+index 5fd8264..e7f4152 100644
+--- a/include/RegionSelector.hpp
++++ b/include/RegionSelector.hpp
+@@ -26,6 +26,7 @@ namespace gsr {
+         enum class SelectionType {
+             NONE,
+             REGION,
++            REGION_EXTERNAL,
+             WINDOW
+         };
+ 
+@@ -43,6 +44,9 @@ namespace gsr {
+         bool take_selection();
+         bool take_canceled();
+         Region get_region_selection(Display *x11_dpy, struct wl_display *wayland_dpy) const;
++        const std::string& get_region_external_selection() const;
++        void set_region_external(const std::string &region);
++
+         // Returns None (0) if none is selected
+         Window get_window_selection() const;
+ 
+@@ -61,6 +65,7 @@ namespace gsr {
+         GC cursor_gc = nullptr;
+ 
+         Region region;
++        std::string region_external;
+         bool selecting_region = false;
+         bool selected = false;
+         bool canceled = false;
+diff --git a/include/Rpc.hpp b/include/Rpc.hpp
+index b0a877e..69e39f5 100644
+--- a/include/Rpc.hpp
++++ b/include/Rpc.hpp
+@@ -12,6 +12,7 @@
+ 
+ namespace gsr {
+     using RpcCallback = std::function<void(const std::string &name)>;
++    using RpcCallbackWithPayload = std::function<void(const std::string &name, const std::string &payload)>;
+ 
+     enum class RpcOpenResult {
+         OK,
+@@ -37,8 +38,10 @@ namespace gsr {
+         void poll();
+ 
+         bool add_handler(const std::string &name, RpcCallback callback);
++        bool add_handler_with_payload(const std::string &name, RpcCallbackWithPayload callback);
+     private:
+         void handle_client_data(int client_fd, PollData &poll_data);
++        void handle_client_data_with_payload(int client_fd, PollData &poll_data);
+     private:
+         int socket_fd = 0;
+         std::string socket_filepath;
+@@ -46,5 +49,6 @@ namespace gsr {
+         PollData polls_data[GSR_RPC_MAX_POLLS];
+         int num_polls = 0;
+         std::unordered_map<std::string, RpcCallback> handlers_by_name;
++        std::unordered_map<std::string, RpcCallbackWithPayload> handlers_with_payload_by_name;
+     };
+ }
+\ No newline at end of file
+diff --git a/src/Overlay.cpp b/src/Overlay.cpp
+index 053020b..defaed3 100644
+--- a/src/Overlay.cpp
++++ b/src/Overlay.cpp
+@@ -887,6 +887,9 @@ namespace gsr {
+                     on_region_selected();
+                     break;
+                 }
++                case RegionSelector::SelectionType::REGION_EXTERNAL: {
++                    break;
++                }
+                 case RegionSelector::SelectionType::WINDOW: {
+                     mgl_context *context = mgl_get_context();
+                     Display *display = (Display*)context->connection;
+@@ -1755,6 +1758,11 @@ namespace gsr {
+         on_press_take_screenshot(false, ScreenshotForceType::REGION);
+     }
+ 
++    void Overlay::take_screenshot_region_external(const std::string &region) {
++        region_selector.set_region_external(region);
++        on_press_take_screenshot(true, ScreenshotForceType::REGION_EXTERNAL);
++    }
++
+     void Overlay::take_screenshot_window() {
+         on_press_take_screenshot(false, ScreenshotForceType::WINDOW);
+     }
+@@ -2663,6 +2671,14 @@ namespace gsr {
+         args.push_back(region_str);
+     }
+ 
++    void Overlay::add_region_external_command(std::vector<const char*> &args, char *region_str, int region_str_size) {
++        const std::string &region = region_selector.get_region_external_selection();
++
++        snprintf(region_str, region_str_size, "%s", region.c_str());
++        args.push_back("-region");
++        args.push_back(region_str);
++    }
++
+     void Overlay::add_common_gpu_screen_recorder_args(std::vector<const char*> &args, const RecordOptions &record_options, const std::vector<std::string> &audio_tracks, const std::string &video_bitrate, const char *region, char *region_str, int region_str_size, const std::string &region_area_option, RecordForceType force_type) {
+         if(record_options.video_quality == "custom") {
+             args.push_back("-bm");
+@@ -2705,6 +2721,8 @@ namespace gsr {
+             return capture_options.focused;
+         } else if(capture_target == "region") {
+             return capture_options.region;
++        } else if(capture_target == "region_external") {
++            return capture_options.region;
+         } else if(capture_target == "portal") {
+             return capture_options.portal;
+         } else if(capture_target == "focused_monitor") {
+@@ -2738,6 +2756,8 @@ namespace gsr {
+     std::string Overlay::get_capture_target(const std::string &capture_target, const SupportedCaptureOptions &capture_options) {
+         if(capture_target == "window") {
+             return std::to_string(region_selector.get_window_selection());
++        } else if(capture_target == "region_external") {
++            return "region";
+         } else if(capture_target == "focused_monitor") {
+             std::optional<CursorInfo> cursor_info;
+             if(cursor_tracker) {
+@@ -3567,6 +3587,9 @@ namespace gsr {
+             case ScreenshotForceType::REGION:
+                 record_area_option = "region";
+                 break;
++            case ScreenshotForceType::REGION_EXTERNAL:
++                record_area_option = "region_external";
++                break;
+             case ScreenshotForceType::WINDOW:
+                 record_area_option = gsr_info.system_info.display_server == DisplayServer::X11 ? "window" : "portal";
+                 break;
+@@ -3639,6 +3662,8 @@ namespace gsr {
+         char region_str[128];
+         if(record_area_option == "region")
+             add_region_command(args, region_str, sizeof(region_str));
++        else if(record_area_option == "region_external")
++            add_region_external_command(args, region_str, sizeof(region_str));
+ 
+         args.push_back(nullptr);
+ 
+diff --git a/src/RegionSelector.cpp b/src/RegionSelector.cpp
+index 58aad9f..0f8e8ab 100644
+--- a/src/RegionSelector.cpp
++++ b/src/RegionSelector.cpp
+@@ -507,6 +507,16 @@ namespace gsr {
+         return returned_region;
+     }
+ 
++    const std::string& RegionSelector::get_region_external_selection() const {
++        assert(selection_type == SelectionType::REGION_EXTERNAL);
++        return region_external;
++    }
++
++    void RegionSelector::set_region_external(const std::string &r) {
++        this->region_external = r;
++        this->selection_type = SelectionType::REGION_EXTERNAL;
++    }
++
+     Window RegionSelector::get_window_selection() const {
+         assert(selection_type == SelectionType::WINDOW);
+         if(focused_window)
+diff --git a/src/Rpc.cpp b/src/Rpc.cpp
+index cced7f5..04344f7 100644
+--- a/src/Rpc.cpp
++++ b/src/Rpc.cpp
+@@ -207,6 +207,18 @@ namespace gsr {
+         memmove(poll_data.buffer, newline_p + 1, poll_data.buffer_size - (command_size + 1));
+         poll_data.buffer_size -= (command_size + 1);
+ 
++        auto pos = name.find(' ');
++        if (pos != std::string::npos) {
++            std::string cmd = name.substr(0, pos);
++            std::string payload = name.substr(pos + 1);
++
++            auto it_payload = handlers_with_payload_by_name.find(cmd);
++            if (it_payload != handlers_with_payload_by_name.end()) {
++                it_payload->second(cmd, payload);
++                return;
++            }
++        }
++
+         auto it = handlers_by_name.find(name);
+         if(it != handlers_by_name.end())
+             it->second(name);
+@@ -215,4 +227,8 @@ namespace gsr {
+     bool Rpc::add_handler(const std::string &name, RpcCallback callback) {
+         return handlers_by_name.insert(std::make_pair(name, std::move(callback))).second;
+     }
++
++    bool Rpc::add_handler_with_payload(const std::string &name, RpcCallbackWithPayload callback) {
++        return handlers_with_payload_by_name.insert(std::make_pair(name, std::move(callback))).second;
++    }
+ }
+\ No newline at end of file
+diff --git a/src/main.cpp b/src/main.cpp
+index c862de0..137e2b9 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -112,6 +112,11 @@ static void rpc_add_commands(gsr::Rpc *rpc, gsr::Overlay *overlay) {
+         overlay->take_screenshot_region();
+     });
+ 
++    rpc->add_handler_with_payload("take-screenshot-region-external", [overlay](const std::string &name, const std::string &payload) {
++        fprintf(stderr, "rpc command executed: %s\n", name.c_str());
++        overlay->take_screenshot_region_external(payload);
++    });
++
+     rpc->add_handler("take-screenshot-window", [overlay](const std::string &name) {
+         fprintf(stderr, "rpc command executed: %s\n", name.c_str());
+         overlay->take_screenshot_window();
+-- 
+2.54.0
+
