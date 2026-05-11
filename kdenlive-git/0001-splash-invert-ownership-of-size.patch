@@ -1,0 +1,44 @@
+From 40c12e643065cef9317a38aa4685d65a6c9b5b7b Mon Sep 17 00:00:00 2001
+From: Nikita Efimov <dreaght@icloud.com>
+Date: Mon, 11 May 2026 11:33:18 +0300
+Subject: [PATCH] splash: invert ownership of size
+
+Don't let content children control size of the window and therefore making it stuck on the initial size.
+
+Signed-off-by: Nikita Efimov <dreaght@icloud.com>
+---
+ src/dialogs/Splash.qml | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/src/dialogs/Splash.qml b/src/dialogs/Splash.qml
+index 9329893dd1..1e360774d5 100644
+--- a/src/dialogs/Splash.qml
++++ b/src/dialogs/Splash.qml
+@@ -52,8 +52,10 @@ Window {
+     flags: Qt.FramelessWindowHint
+     x: (Screen.width - width) / 2
+     y: (Screen.height - height) / 2
+-    width: splashContent.width
+-    height: splashContent.height
++    minimumWidth: splashContent.implicitWidth
++    minimumHeight: splashContent.implicitHeight
++    width: splashContent.implicitWidth
++    height: splashContent.implicitHeight
+ 
+     function fade()
+     {
+@@ -90,8 +92,9 @@ Window {
+ 
+     Rectangle {
+         id: splashContent
+-        height: splash.crashRecovery || splash.wasUpgraded  ? newProjectButton.height * 18 : newProjectButton.height * 16
+-        width: newProjectButton.height * 17
++        anchors.fill: parent
++        implicitHeight: splash.crashRecovery || splash.wasUpgraded  ? newProjectButton.height * 20 : newProjectButton.height * 18
++        implicitWidth: newProjectButton.height * 17
+         radius: 5
+         border.width: 2
+         border.color: "#d7566e"
+-- 
+2.54.0
+

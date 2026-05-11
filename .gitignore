@@ -4,5 +4,8 @@
 **/*.pkg.tar.*
 **/*.src.tar.*
 
+# nested directories inside package folders
+*/*/
+
 # common generated signatures
 **/*.sig
