@@ -9,3 +9,6 @@
 
 # common generated signatures
 **/*.sig
+
+# hidden dotfiles
+.*

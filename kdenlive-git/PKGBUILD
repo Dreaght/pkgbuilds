@@ -7,8 +7,8 @@
 
 
 pkgname=kdenlive-git
-pkgver=26.07.70.r23914
-pkgrel=2
+pkgver=26.03.70.r23250
+pkgrel=1
 pkgdesc="A non-linear video editor for Linux using the MLT video framework. KF5 Frameworks (Latest Applications GIT Version)"
 arch=('i686' 'x86_64')
 url="http://www.kdenlive.org/"
@@ -39,27 +39,9 @@ optdepends=(
 	    'python-vosk-bin: open source speech recognition')
 provides=('kdenlive' )
 conflicts=('kdenlive')
-source=('git+https://invent.kde.org/multimedia/kdenlive'
-        '0001-splash-fix-overlapping.patch'
-        '0001-splash-invert-ownership-of-size.patch')
-sha256sums=('SKIP'
-            '7718cbd282d22eb6440cfccec24688199d1e88dadc21f1259cbf31434cd6dacb'
-            'b15c485e824e7d4ede9981cca1b50f4dfe1846817cd3d4d8666ea450afd44023')
+source=('git+https://invent.kde.org/multimedia/kdenlive')
+sha1sums=('SKIP')
 #options=(debug !strip)
-
-prepare() {
-  patch \
-    --forward \
-    --strip=1 \
-    -d "${srcdir}/kdenlive" \
-    --input="${srcdir}/0001-splash-fix-overlapping.patch"
-
-  patch \
-    --forward \
-    --strip=1 \
-    -d "${srcdir}/kdenlive" \
-    --input="${srcdir}/0001-splash-invert-ownership-of-size.patch"
-}
 
 pkgver() {
   cd ${srcdir}/kdenlive
@@ -80,3 +62,5 @@ build() {
 package() {
   DESTDIR="$pkgdir" cmake --install build
 }
+
+
