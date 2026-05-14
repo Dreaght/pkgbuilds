@@ -7,13 +7,12 @@ Collection of PKGBUILDs and related files for Arch Linux packages.
 Build a package from its directory with:
 
 ```bash
-makepkg -si
+makepkg -Csi
 ```
 
-Or with [`yay`](https://github.com/jguer/yay):
+Refresh [`yay`](https://github.com/jguer/yay):
 
 ```bash
-yay -Bi <dir>
 yay -Y --gendb
 ```
 

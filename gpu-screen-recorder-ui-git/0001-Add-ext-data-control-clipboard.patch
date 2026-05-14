@@ -1,0 +1,1327 @@
+From 84a61e1d95f26ce068e8c788f5356a9b41abcc97 Mon Sep 17 00:00:00 2001
+From: Dreaght <dreaght@icloud.com>
+Date: Thu, 14 May 2026 07:51:57 +0300
+Subject: [PATCH] Add ext-data-control clipboard and use it if it's available
+
+Signed-off-by: Dreaght <dreaght@icloud.com>
+---
+ include/Clipboard/Clipboard.hpp        |  21 ++
+ include/Clipboard/ClipboardWayland.hpp |  24 ++
+ include/Clipboard/ClipboardX11.hpp     |  56 +++
+ include/Overlay.hpp                    |   6 +-
+ meson.build                            |   2 +
+ protocol/ext-data-control-v1.xml       | 276 +++++++++++++++
+ protocol/meson.build                   |   1 +
+ src/Clipboard/ClipboardWayland.cpp     | 453 +++++++++++++++++++++++++
+ src/Clipboard/ClipboardX11.cpp         | 316 +++++++++++++++++
+ src/Overlay.cpp                        |  22 +-
+ 10 files changed, 1167 insertions(+), 10 deletions(-)
+ create mode 100644 include/Clipboard/Clipboard.hpp
+ create mode 100644 include/Clipboard/ClipboardWayland.hpp
+ create mode 100644 include/Clipboard/ClipboardX11.hpp
+ create mode 100644 protocol/ext-data-control-v1.xml
+ create mode 100644 src/Clipboard/ClipboardWayland.cpp
+ create mode 100644 src/Clipboard/ClipboardX11.cpp
+
+diff --git a/include/Clipboard/Clipboard.hpp b/include/Clipboard/Clipboard.hpp
+new file mode 100644
+index 0000000..b5d9f70
+--- /dev/null
++++ b/include/Clipboard/Clipboard.hpp
+@@ -0,0 +1,21 @@
++#pragma once
++
++#include <string>
++
++namespace gsr {
++    class Clipboard {
++    public:
++        enum class FileType {
++            JPG,
++            PNG
++        };
++
++        Clipboard() = default;
++        virtual ~Clipboard() = default;
++        Clipboard(const Clipboard&) = delete;
++        Clipboard& operator=(const Clipboard&) = delete;
++
++        // Set this to an empty string to unset clipboard
++        virtual void set_current_file(const std::string &filepath, FileType file_type) = 0;
++    };
++}
+diff --git a/include/Clipboard/ClipboardWayland.hpp b/include/Clipboard/ClipboardWayland.hpp
+new file mode 100644
+index 0000000..1b1dcd1
+--- /dev/null
++++ b/include/Clipboard/ClipboardWayland.hpp
+@@ -0,0 +1,24 @@
++#pragma once
++
++#include "Clipboard.hpp"
++#include <memory>
++
++struct wl_display;
++
++namespace gsr {
++    class ClipboardWayland : public Clipboard {
++    public:
++        static bool is_supported(wl_display *dpy);
++
++        explicit ClipboardWayland(wl_display *dpy);
++        ~ClipboardWayland() override;
++        ClipboardWayland(const ClipboardWayland&) = delete;
++        ClipboardWayland& operator=(const ClipboardWayland&) = delete;
++
++        void set_current_file(const std::string &filepath, FileType file_type) override;
++
++        struct Impl;
++    private:
++        std::unique_ptr<Impl> impl;
++    };
++}
+diff --git a/include/Clipboard/ClipboardX11.hpp b/include/Clipboard/ClipboardX11.hpp
+new file mode 100644
+index 0000000..9b3a3b8
+--- /dev/null
++++ b/include/Clipboard/ClipboardX11.hpp
+@@ -0,0 +1,56 @@
++#pragma once
++
++#include <string>
++#include <thread>
++#include <mutex>
++#include <vector>
++#include <X11/Xlib.h>
++
++#include "Clipboard.hpp"
++
++namespace gsr {
++    struct ClipboardX11Copy {
++        Window requestor = None;
++        uint64_t file_offset = 0;
++        Atom property = None;
++        Atom requestor_target = None;
++    };
++
++    class ClipboardX11 : public Clipboard {
++    public:
++        explicit ClipboardX11();
++        ~ClipboardX11() override;
++        ClipboardX11(const ClipboardX11&) = delete;
++        ClipboardX11& operator=(const ClipboardX11&) = delete;
++
++        void set_current_file(const std::string &filepath, FileType file_type) override;
++    private:
++        bool file_type_matches_request_atom(FileType file_type, Atom request_atom);
++        const char* file_type_clipboard_get_name(Atom request_atom);
++        const char* file_type_get_name(FileType file_type);
++        void send_clipboard_start(XSelectionRequestEvent *xselectionrequest);
++        void transfer_clipboard_data(XSelectionRequestEvent *xselectionrequest, ClipboardX11Copy *clipboard_copy);
++        ClipboardX11Copy* get_clipboard_copy_by_requestor(Window requestor);
++        void remove_clipboard_copy(Window requestor);
++    private:
++        Display *dpy = nullptr;
++        Window clipboard_window = None;
++        int file_fd = -1;
++        uint64_t file_size = 0;
++        FileType file_type = FileType::JPG;
++
++        Atom incr_atom = None;
++        Atom targets_atom = None;
++        Atom clipboard_atom = None;
++        Atom image_jpg_atom = None;
++        Atom image_jpeg_atom = None;
++        Atom image_png_atom = None;
++
++        std::thread event_thread;
++        std::mutex mutex;
++        bool running = true;
++
++        std::vector<ClipboardX11Copy> clipboard_copies;
++        bool should_clear_selection = false;
++    };
++}
+diff --git a/include/Overlay.hpp b/include/Overlay.hpp
+index ff4d148..170ce59 100644
+--- a/include/Overlay.hpp
++++ b/include/Overlay.hpp
+@@ -8,7 +8,7 @@
+ #include "WindowUtils.hpp"
+ #include "GlobalHotkeys/GlobalHotkeysJoystick.hpp"
+ #include "AudioPlayer.hpp"
+-#include "ClipboardFile.hpp"
++#include "Clipboard/Clipboard.hpp"
+ #include "LedIndicator.hpp"
+ #include "CursorTracker/CursorTracker.hpp"
+ #include "RegionSelector/RegionSelector.hpp"
+@@ -311,11 +311,11 @@ namespace gsr {
+         bool reopen_settings_after_reload = false;
+         int pending_settings_scroll_y = 0;
+         double notification_duration_multiplier = 1.0;
+-        ClipboardFile clipboard_file;
++        std::unique_ptr<Clipboard> clipboard;
+ 
+         std::unique_ptr<LedIndicator> led_indicator = nullptr;
+ 
+         bool supports_window_title = false;
+         std::unique_ptr<DesktopEnvironment> desktop_environment;
+     };
+-}
+\ No newline at end of file
++}
+diff --git a/meson.build b/meson.build
+index 41c7159..bfec4f7 100644
+--- a/meson.build
++++ b/meson.build
+@@ -49,6 +49,8 @@ src = [
+     'src/Utils.cpp',
+     'src/WindowUtils.cpp',
+     'src/WaylandHostBridge.cpp',
++    'src/Clipboard/ClipboardX11.cpp',
++    'src/Clipboard/ClipboardWayland.cpp',
+     'src/Config.cpp',
+     'src/GsrInfo.cpp',
+     'src/Process.cpp',
+diff --git a/protocol/ext-data-control-v1.xml b/protocol/ext-data-control-v1.xml
+new file mode 100644
+index 0000000..5f99b4d
+--- /dev/null
++++ b/protocol/ext-data-control-v1.xml
+@@ -0,0 +1,276 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="ext_data_control_v1">
++  <copyright>
++    Copyright © 2018 Simon Ser
++    Copyright © 2019 Ivan Molodetskikh
++    Copyright © 2024 Neal Gompa
++
++    Permission to use, copy, modify, distribute, and sell this
++    software and its documentation for any purpose is hereby granted
++    without fee, provided that the above copyright notice appear in
++    all copies and that both that copyright notice and this permission
++    notice appear in supporting documentation, and that the name of
++    the copyright holders not be used in advertising or publicity
++    pertaining to distribution of the software without specific,
++    written prior permission.  The copyright holders make no
++    representations about the suitability of this software for any
++    purpose.  It is provided "as is" without express or implied
++    warranty.
++
++    THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
++    SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
++    FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
++    SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
++    AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
++    ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
++    THIS SOFTWARE.
++  </copyright>
++
++  <description summary="control data devices">
++    This protocol allows a privileged client to control data devices. In
++    particular, the client will be able to manage the current selection and take
++    the role of a clipboard manager.
++
++    Warning! The protocol described in this file is currently in the testing
++    phase. Backward compatible changes may be added together with the
++    corresponding interface version bump. Backward incompatible changes can
++    only be done by creating a new major version of the extension.
++  </description>
++
++  <interface name="ext_data_control_manager_v1" version="1">
++    <description summary="manager to control data devices">
++      This interface is a manager that allows creating per-seat data device
++      controls.
++    </description>
++
++    <request name="create_data_source">
++      <description summary="create a new data source">
++        Create a new data source.
++      </description>
++      <arg name="id" type="new_id" interface="ext_data_control_source_v1"
++        summary="data source to create"/>
++    </request>
++
++    <request name="get_data_device">
++      <description summary="get a data device for a seat">
++        Create a data device that can be used to manage a seat's selection.
++      </description>
++      <arg name="id" type="new_id" interface="ext_data_control_device_v1"/>
++      <arg name="seat" type="object" interface="wl_seat"/>
++    </request>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy the manager">
++        All objects created by the manager will still remain valid, until their
++        appropriate destroy request has been called.
++      </description>
++    </request>
++  </interface>
++
++  <interface name="ext_data_control_device_v1" version="1">
++    <description summary="manage a data device for a seat">
++      This interface allows a client to manage a seat's selection.
++
++      When the seat is destroyed, this object becomes inert.
++    </description>
++
++    <request name="set_selection">
++      <description summary="copy data to the selection">
++        This request asks the compositor to set the selection to the data from
++        the source on behalf of the client.
++
++        The given source may not be used in any further set_selection or
++        set_primary_selection requests. Attempting to use a previously used
++        source triggers the used_source protocol error.
++
++        To unset the selection, set the source to NULL.
++      </description>
++      <arg name="source" type="object" interface="ext_data_control_source_v1"
++        allow-null="true"/>
++    </request>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy this data device">
++        Destroys the data device object.
++      </description>
++    </request>
++
++    <event name="data_offer">
++      <description summary="introduce a new ext_data_control_offer">
++        The data_offer event introduces a new ext_data_control_offer object,
++        which will subsequently be used in either the
++        ext_data_control_device.selection event (for the regular clipboard
++        selections) or the ext_data_control_device.primary_selection event (for
++        the primary clipboard selections). Immediately following the
++        ext_data_control_device.data_offer event, the new data_offer object
++        will send out ext_data_control_offer.offer events to describe the MIME
++        types it offers.
++      </description>
++      <arg name="id" type="new_id" interface="ext_data_control_offer_v1"/>
++    </event>
++
++    <event name="selection">
++      <description summary="advertise new selection">
++        The selection event is sent out to notify the client of a new
++        ext_data_control_offer for the selection for this device. The
++        ext_data_control_device.data_offer and the ext_data_control_offer.offer
++        events are sent out immediately before this event to introduce the data
++        offer object. The selection event is sent to a client when a new
++        selection is set. The ext_data_control_offer is valid until a new
++        ext_data_control_offer or NULL is received. The client must destroy the
++        previous selection ext_data_control_offer, if any, upon receiving this
++        event. Regardless, the previous selection will be ignored once a new
++        selection ext_data_control_offer is received.
++
++        The first selection event is sent upon binding the
++        ext_data_control_device object.
++      </description>
++      <arg name="id" type="object" interface="ext_data_control_offer_v1"
++        allow-null="true"/>
++    </event>
++
++    <event name="finished">
++      <description summary="this data control is no longer valid">
++        This data control object is no longer valid and should be destroyed by
++        the client.
++      </description>
++    </event>
++
++    <event name="primary_selection">
++      <description summary="advertise new primary selection">
++        The primary_selection event is sent out to notify the client of a new
++        ext_data_control_offer for the primary selection for this device. The
++        ext_data_control_device.data_offer and the ext_data_control_offer.offer
++        events are sent out immediately before this event to introduce the data
++        offer object. The primary_selection event is sent to a client when a
++        new primary selection is set. The ext_data_control_offer is valid until
++        a new ext_data_control_offer or NULL is received. The client must
++        destroy the previous primary selection ext_data_control_offer, if any,
++        upon receiving this event. Regardless, the previous primary selection
++        will be ignored once a new primary selection ext_data_control_offer is
++        received.
++
++        If the compositor supports primary selection, the first
++        primary_selection event is sent upon binding the
++        ext_data_control_device object.
++      </description>
++      <arg name="id" type="object" interface="ext_data_control_offer_v1"
++        allow-null="true"/>
++    </event>
++
++    <request name="set_primary_selection">
++      <description summary="copy data to the primary selection">
++        This request asks the compositor to set the primary selection to the
++        data from the source on behalf of the client.
++
++        The given source may not be used in any further set_selection or
++        set_primary_selection requests. Attempting to use a previously used
++        source triggers the used_source protocol error.
++
++        To unset the primary selection, set the source to NULL.
++
++        The compositor will ignore this request if it does not support primary
++        selection.
++      </description>
++      <arg name="source" type="object" interface="ext_data_control_source_v1"
++        allow-null="true"/>
++    </request>
++
++    <enum name="error">
++      <entry name="used_source" value="1"
++        summary="source given to set_selection or set_primary_selection was already used before"/>
++    </enum>
++  </interface>
++
++  <interface name="ext_data_control_source_v1" version="1">
++    <description summary="offer to transfer data">
++      The ext_data_control_source object is the source side of a
++      ext_data_control_offer. It is created by the source client in a data
++      transfer and provides a way to describe the offered data and a way to
++      respond to requests to transfer the data.
++    </description>
++
++    <enum name="error">
++      <entry name="invalid_offer" value="1"
++        summary="offer sent after ext_data_control_device.set_selection"/>
++    </enum>
++
++    <request name="offer">
++      <description summary="add an offered MIME type">
++        This request adds a MIME type to the set of MIME types advertised to
++        targets. Can be called several times to offer multiple types.
++
++        Calling this after ext_data_control_device.set_selection is a protocol
++        error.
++      </description>
++      <arg name="mime_type" type="string"
++        summary="MIME type offered by the data source"/>
++    </request>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy this source">
++        Destroys the data source object.
++      </description>
++    </request>
++
++    <event name="send">
++      <description summary="send the data">
++        Request for data from the client. Send the data as the specified MIME
++        type over the passed file descriptor, then close it.
++      </description>
++      <arg name="mime_type" type="string" summary="MIME type for the data"/>
++      <arg name="fd" type="fd" summary="file descriptor for the data"/>
++    </event>
++
++    <event name="cancelled">
++      <description summary="selection was cancelled">
++        This data source is no longer valid. The data source has been replaced
++        by another data source.
++
++        The client should clean up and destroy this data source.
++      </description>
++    </event>
++  </interface>
++
++  <interface name="ext_data_control_offer_v1" version="1">
++    <description summary="offer to transfer data">
++      A ext_data_control_offer represents a piece of data offered for transfer
++      by another client (the source client). The offer describes the different
++      MIME types that the data can be converted to and provides the mechanism
++      for transferring the data directly from the source client.
++    </description>
++
++    <request name="receive">
++      <description summary="request that the data is transferred">
++        To transfer the offered data, the client issues this request and
++        indicates the MIME type it wants to receive. The transfer happens
++        through the passed file descriptor (typically created with the pipe
++        system call). The source client writes the data in the MIME type
++        representation requested and then closes the file descriptor.
++
++        The receiving client reads from the read end of the pipe until EOF and
++        then closes its end, at which point the transfer is complete.
++
++        This request may happen multiple times for different MIME types.
++      </description>
++      <arg name="mime_type" type="string"
++        summary="MIME type desired by receiver"/>
++      <arg name="fd" type="fd" summary="file descriptor for data transfer"/>
++    </request>
++
++    <event name="offer">
++      <description summary="advertise offered MIME type">
++        Sent immediately after creating the offer to tell the client about a
++        MIME type that the source client supports.
++      </description>
++      <arg name="mime_type" type="string" summary="offered MIME type"/>
++    </event>
++
++    <request name="destroy" type="destructor">
++      <description summary="destroy this offer">
++        Destroys the data offer.
++      </description>
++    </request>
++  </interface>
++</protocol>
+diff --git a/protocol/meson.build b/protocol/meson.build
+index ee603c3..e8f6ddb 100644
+--- a/protocol/meson.build
++++ b/protocol/meson.build
+@@ -19,6 +19,7 @@ protocols = [
+ 	'xdg-shell.xml',
+ 	'wlr-layer-shell-unstable-v1.xml',
+ 	'wlr-foreign-toplevel-management-unstable-v1.xml',
++	'ext-data-control-v1.xml',
+ ]
+ 
+ protocol_src = []
+diff --git a/src/Clipboard/ClipboardWayland.cpp b/src/Clipboard/ClipboardWayland.cpp
+new file mode 100644
+index 0000000..4852b47
+--- /dev/null
++++ b/src/Clipboard/ClipboardWayland.cpp
+@@ -0,0 +1,453 @@
++#include "../../include/Clipboard/ClipboardWayland.hpp"
++
++#include <stdio.h>
++#include <errno.h>
++#include <string.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <deque>
++#include <memory>
++#include <mutex>
++#include <condition_variable>
++#include <thread>
++#include <vector>
++
++#include <wayland-client.h>
++#include "ext-data-control-v1-client-protocol.h"
++
++namespace gsr {
++    namespace {
++        struct ClipboardOffer {
++            struct ext_data_control_offer_v1 *offer = nullptr;
++        };
++
++        struct ClipboardProbe {
++            bool found = false;
++        };
++
++        static bool write_all(int fd, const void *data, size_t size) {
++            const unsigned char *ptr = (const unsigned char*)data;
++            while(size > 0) {
++                const ssize_t bytes_written = write(fd, ptr, size);
++                if(bytes_written < 0) {
++                    if(errno == EINTR)
++                        continue;
++                    return false;
++                }
++
++                ptr += bytes_written;
++                size -= bytes_written;
++            }
++            return true;
++        }
++
++        static std::shared_ptr<std::vector<unsigned char>> load_file_contents(const std::string &filepath) {
++            unsigned char buffer[1 << 16];
++
++            const int file_fd = open(filepath.c_str(), O_RDONLY);
++            if(file_fd < 0)
++                return {};
++
++            auto result = std::make_shared<std::vector<unsigned char>>();
++            while(true) {
++                const ssize_t bytes_read = read(file_fd, buffer, sizeof(buffer));
++                if(bytes_read < 0) {
++                    if(errno == EINTR)
++                        continue;
++                    result.reset();
++                    break;
++                }
++
++                if(bytes_read == 0)
++                    break;
++
++                result->insert(result->end(), buffer, buffer + bytes_read);
++            }
++
++            close(file_fd);
++            return result;
++        }
++
++        static bool send_file_contents(const std::shared_ptr<std::vector<unsigned char>> &file_data, int fd) {
++            if(!file_data)
++                return false;
++
++            return write_all(fd, file_data->data(), file_data->size());
++        }
++
++        void clipboard_offer_offer(void*, struct ext_data_control_offer_v1*, const char*) {}
++
++        const struct ext_data_control_offer_v1_listener clipboard_offer_listener = {
++            clipboard_offer_offer,
++        };
++
++        void probe_registry_global(void *data, struct wl_registry*, uint32_t,
++            const char *interface, uint32_t)
++        {
++            ClipboardProbe *probe = (ClipboardProbe*)data;
++            if(strcmp(interface, ext_data_control_manager_v1_interface.name) == 0)
++                probe->found = true;
++        }
++
++        void probe_registry_global_remove(void*, struct wl_registry*, uint32_t) {}
++
++        const struct wl_registry_listener probe_registry_listener = {
++            probe_registry_global, probe_registry_global_remove,
++        };
++    }
++
++    struct ClipboardWayland::Impl {
++        struct wl_display *display = nullptr;
++        struct wl_registry *registry = nullptr;
++        struct wl_seat *seat = nullptr;
++        struct ext_data_control_manager_v1 *manager = nullptr;
++        struct ext_data_control_device_v1 *device = nullptr;
++        struct ext_data_control_source_v1 *source = nullptr;
++
++        ClipboardOffer *pending_offer = nullptr;
++        ClipboardOffer *selection_offer = nullptr;
++        ClipboardOffer *primary_selection_offer = nullptr;
++
++        struct PendingSend {
++            std::shared_ptr<std::vector<unsigned char>> file_data;
++            int fd = -1;
++        };
++
++        std::string current_filepath;
++        FileType current_file_type = FileType::PNG;
++        std::shared_ptr<std::vector<unsigned char>> current_file_data;
++        std::deque<PendingSend> pending_sends;
++        std::mutex mutex;
++        std::condition_variable condition_variable;
++        std::thread send_thread;
++        std::thread event_thread;
++        bool running = false;
++        bool failed = false;
++
++        ~Impl() { teardown(); }
++        bool init();
++        void teardown();
++        void destroy_source();
++        void destroy_offer(ClipboardOffer *offer);
++        void clear_selection();
++        void send_loop();
++        void event_loop();
++    };
++
++    namespace {
++        void source_send(void *data, struct ext_data_control_source_v1*, const char*, int32_t fd) {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            {
++                std::lock_guard<std::mutex> lock(impl->mutex);
++                impl->pending_sends.push_back({ impl->current_file_data, fd });
++            }
++            impl->condition_variable.notify_one();
++        }
++
++        void source_cancelled(void *data, struct ext_data_control_source_v1 *source) {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            if(impl->source == source)
++                impl->source = nullptr;
++            ext_data_control_source_v1_destroy(source);
++        }
++
++        const struct ext_data_control_source_v1_listener source_listener = {
++            source_send, source_cancelled,
++        };
++
++        void device_data_offer(void *data, struct ext_data_control_device_v1*, struct ext_data_control_offer_v1 *offer) {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            impl->destroy_offer(impl->pending_offer);
++            impl->pending_offer = new ClipboardOffer();
++            impl->pending_offer->offer = offer;
++            ext_data_control_offer_v1_add_listener(offer, &clipboard_offer_listener, impl->pending_offer);
++        }
++
++        void device_selection(void *data, struct ext_data_control_device_v1*, struct ext_data_control_offer_v1 *offer) {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            impl->destroy_offer(impl->selection_offer);
++            impl->selection_offer = nullptr;
++
++            if(offer && impl->pending_offer && impl->pending_offer->offer == offer) {
++                impl->selection_offer = impl->pending_offer;
++                impl->pending_offer = nullptr;
++            } else {
++                impl->destroy_offer(impl->pending_offer);
++                impl->pending_offer = nullptr;
++            }
++        }
++
++        void device_finished(void *data, struct ext_data_control_device_v1 *device) {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            if(impl->device == device)
++                impl->device = nullptr;
++            ext_data_control_device_v1_destroy(device);
++        }
++
++        void device_primary_selection(void *data, struct ext_data_control_device_v1*, struct ext_data_control_offer_v1 *offer) {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            impl->destroy_offer(impl->primary_selection_offer);
++            impl->primary_selection_offer = nullptr;
++
++            if(offer && impl->pending_offer && impl->pending_offer->offer == offer) {
++                impl->primary_selection_offer = impl->pending_offer;
++                impl->pending_offer = nullptr;
++            } else {
++                impl->destroy_offer(impl->pending_offer);
++                impl->pending_offer = nullptr;
++            }
++        }
++
++        const struct ext_data_control_device_v1_listener device_listener = {
++            device_data_offer,
++            device_selection,
++            device_finished,
++            device_primary_selection,
++        };
++
++        void registry_global(void *data, struct wl_registry *registry, uint32_t name,
++            const char *interface, uint32_t version)
++        {
++            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            if(strcmp(interface, ext_data_control_manager_v1_interface.name) == 0) {
++                impl->manager = (struct ext_data_control_manager_v1*)wl_registry_bind(registry, name, &ext_data_control_manager_v1_interface, 1);
++            } else if(strcmp(interface, wl_seat_interface.name) == 0 && !impl->seat) {
++                impl->seat = (struct wl_seat*)wl_registry_bind(registry, name, &wl_seat_interface, version >= 5 ? 5 : version);
++            }
++        }
++
++        void registry_global_remove(void*, struct wl_registry*, uint32_t) {}
++
++        const struct wl_registry_listener registry_listener = {
++            registry_global, registry_global_remove,
++        };
++    }
++
++    bool ClipboardWayland::Impl::init() {
++        display = wl_display_connect(nullptr);
++        if(!display) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to connect to the Wayland server\n");
++            failed = true;
++            return false;
++        }
++
++        registry = wl_display_get_registry(display);
++        if(!registry) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to get wayland registry\n");
++            failed = true;
++            return false;
++        }
++
++        wl_registry_add_listener(registry, &registry_listener, this);
++        wl_display_roundtrip(display);
++
++        if(!manager) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: ext-data-control-v1 is not available\n");
++            failed = true;
++            return false;
++        }
++
++        if(!seat) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: no wayland seat available\n");
++            failed = true;
++            return false;
++        }
++
++        device = ext_data_control_manager_v1_get_data_device(manager, seat);
++        if(!device) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to create data device\n");
++            failed = true;
++            return false;
++        }
++
++        ext_data_control_device_v1_add_listener(device, &device_listener, this);
++        running = true;
++        send_thread = std::thread([this] { send_loop(); });
++        event_thread = std::thread([this] { event_loop(); });
++        return true;
++    }
++
++    void ClipboardWayland::Impl::event_loop() {
++        struct pollfd poll_fd;
++        poll_fd.fd = wl_display_get_fd(display);
++        poll_fd.events = POLLIN;
++        poll_fd.revents = 0;
++
++        while(running) {
++            wl_display_dispatch_pending(display);
++            wl_display_flush(display);
++
++            poll_fd.revents = 0;
++            if(poll(&poll_fd, 1, 100) <= 0)
++                continue;
++
++            if(wl_display_dispatch(display) < 0)
++                break;
++        }
++    }
++
++    void ClipboardWayland::Impl::send_loop() {
++        while(true) {
++            PendingSend pending_send;
++            {
++                std::unique_lock<std::mutex> lock(mutex);
++                condition_variable.wait(lock, [this] { return !running || !pending_sends.empty(); });
++                if(!running && pending_sends.empty())
++                    return;
++
++                pending_send = std::move(pending_sends.front());
++                pending_sends.pop_front();
++            }
++
++            if(!send_file_contents(pending_send.file_data, pending_send.fd)) {
++                fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to send clipboard data, error: %s\n", strerror(errno));
++            }
++            close(pending_send.fd);
++        }
++    }
++
++    void ClipboardWayland::Impl::destroy_offer(ClipboardOffer *offer) {
++        if(!offer)
++            return;
++
++        if(offer->offer) {
++            ext_data_control_offer_v1_destroy(offer->offer);
++            offer->offer = nullptr;
++        }
++
++        delete offer;
++    }
++
++    void ClipboardWayland::Impl::destroy_source() {
++        if(source) {
++            ext_data_control_source_v1_destroy(source);
++            source = nullptr;
++        }
++    }
++
++    void ClipboardWayland::Impl::clear_selection() {
++        if(device)
++            ext_data_control_device_v1_set_selection(device, nullptr);
++        destroy_source();
++        current_filepath.clear();
++        current_file_data.reset();
++    }
++
++    void ClipboardWayland::Impl::teardown() {
++        {
++            std::lock_guard<std::mutex> lock(mutex);
++            running = false;
++        }
++        condition_variable.notify_all();
++        if(send_thread.joinable())
++            send_thread.join();
++        if(event_thread.joinable())
++            event_thread.join();
++
++        for(PendingSend &pending_send : pending_sends) {
++            if(pending_send.fd >= 0)
++                close(pending_send.fd);
++        }
++        pending_sends.clear();
++
++        clear_selection();
++
++        destroy_offer(pending_offer);
++        destroy_offer(selection_offer);
++        destroy_offer(primary_selection_offer);
++        pending_offer = nullptr;
++        selection_offer = nullptr;
++        primary_selection_offer = nullptr;
++
++        if(device) {
++            ext_data_control_device_v1_destroy(device);
++            device = nullptr;
++        }
++
++        if(seat) {
++            wl_seat_destroy(seat);
++            seat = nullptr;
++        }
++
++        if(manager) {
++            ext_data_control_manager_v1_destroy(manager);
++            manager = nullptr;
++        }
++
++        if(registry) {
++            wl_registry_destroy(registry);
++            registry = nullptr;
++        }
++
++        if(display) {
++            wl_display_disconnect(display);
++            display = nullptr;
++        }
++        current_filepath.clear();
++    }
++
++    bool ClipboardWayland::is_supported(wl_display *dpy) {
++        if(!dpy)
++            return false;
++
++        ClipboardProbe probe;
++        struct wl_registry *registry = wl_display_get_registry(dpy);
++        if(!registry)
++            return false;
++
++        wl_registry_add_listener(registry, &probe_registry_listener, &probe);
++        wl_display_roundtrip(dpy);
++        wl_registry_destroy(registry);
++        return probe.found;
++    }
++
++    ClipboardWayland::ClipboardWayland(wl_display*) : impl(std::make_unique<Impl>()) {
++        impl->init();
++    }
++
++    ClipboardWayland::~ClipboardWayland() = default;
++
++    void ClipboardWayland::set_current_file(const std::string &filepath, FileType file_type) {
++        if(!impl || impl->failed || !impl->device)
++            return;
++
++        impl->clear_selection();
++
++        if(filepath.empty()) {
++            wl_display_flush(impl->display);
++            return;
++        }
++
++        impl->current_filepath = filepath;
++        impl->current_file_type = file_type;
++        impl->current_file_data = load_file_contents(filepath);
++        if(!impl->current_file_data) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to read clipboard file %s, error: %s\n", filepath.c_str(), strerror(errno));
++            impl->current_filepath.clear();
++            return;
++        }
++
++        impl->source = ext_data_control_manager_v1_create_data_source(impl->manager);
++        if(!impl->source) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to create data source\n");
++            impl->current_filepath.clear();
++            impl->current_file_data.reset();
++            return;
++        }
++
++        ext_data_control_source_v1_add_listener(impl->source, &source_listener, impl.get());
++        switch(file_type) {
++            case FileType::JPG:
++                ext_data_control_source_v1_offer(impl->source, "image/jpg");
++                ext_data_control_source_v1_offer(impl->source, "image/jpeg");
++                break;
++            case FileType::PNG:
++                ext_data_control_source_v1_offer(impl->source, "image/png");
++                break;
++        }
++
++        ext_data_control_device_v1_set_selection(impl->device, impl->source);
++        wl_display_flush(impl->display);
++    }
++}
+diff --git a/src/Clipboard/ClipboardX11.cpp b/src/Clipboard/ClipboardX11.cpp
+new file mode 100644
+index 0000000..36b4f4b
+--- /dev/null
++++ b/src/Clipboard/ClipboardX11.cpp
+@@ -0,0 +1,316 @@
++#include "../../include/Clipboard/ClipboardX11.hpp"
++#include <stdio.h>
++#include <errno.h>
++#include <string.h>
++#include <inttypes.h>
++#include <poll.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <X11/Xatom.h>
++
++#define FORMAT_I64 "%" PRIi64
++#define FORMAT_U64 "%" PRIu64
++
++namespace gsr {
++    ClipboardX11::ClipboardX11() {
++        dpy = XOpenDisplay(nullptr);
++        if(!dpy) {
++            fprintf(stderr, "gsr ui: error: ClipboardX11: failed to connect to the X11 server\n");
++            return;
++        }
++
++        clipboard_window = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy), 0, 0, 8, 8, 0, 0, 0);
++        if(!clipboard_window) {
++            fprintf(stderr, "gsr ui: error: ClipboardX11: failed to create clipboard window\n");
++            XCloseDisplay(dpy);
++            dpy = nullptr;
++            return;
++        }
++
++        incr_atom = XInternAtom(dpy, "INCR", False);
++        targets_atom = XInternAtom(dpy, "TARGETS", False);
++        clipboard_atom = XInternAtom(dpy, "CLIPBOARD", False);
++        image_jpg_atom = XInternAtom(dpy, "image/jpg", False);
++        image_jpeg_atom = XInternAtom(dpy, "image/jpeg", False);
++        image_png_atom = XInternAtom(dpy, "image/png", False);
++
++        event_thread = std::thread([&]() {
++            pollfd poll_fds[1];
++            poll_fds[0].fd = ConnectionNumber(dpy);
++            poll_fds[0].events = POLLIN;
++            poll_fds[0].revents = 0;
++
++            XEvent xev;
++            while(running) {
++                poll_fds[0].revents = 0;
++                poll(poll_fds, 1, 100);
++                while(XPending(dpy)) {
++                    XNextEvent(dpy, &xev);
++                    switch(xev.type) {
++                        case SelectionClear: {
++                            bool clear_current_file = false;
++                            {
++                                std::lock_guard<std::mutex> lock(mutex);
++                                should_clear_selection = true;
++                                if(clipboard_copies.empty()) {
++                                    should_clear_selection = false;
++                                    clear_current_file = true;
++                                }
++                            }
++
++                            if(clear_current_file)
++                                set_current_file("", file_type);
++                            break;
++                        }
++                        case SelectionRequest:
++                            send_clipboard_start(&xev.xselectionrequest);
++                            break;
++                        case PropertyNotify: {
++                            if(xev.xproperty.state == PropertyDelete) {
++                                std::lock_guard<std::mutex> lock(mutex);
++                                ClipboardX11Copy *clipboard_copy = get_clipboard_copy_by_requestor(xev.xproperty.window);
++                                if(!clipboard_copy || xev.xproperty.atom != clipboard_copy->property)
++                                    return;
++
++                                XSelectionRequestEvent xselectionrequest;
++                                xselectionrequest.display = xev.xproperty.display;;
++                                xselectionrequest.requestor = xev.xproperty.window;
++                                xselectionrequest.selection = clipboard_atom;
++                                xselectionrequest.target = clipboard_copy->requestor_target;
++                                xselectionrequest.property = clipboard_copy->property;
++                                xselectionrequest.time = xev.xproperty.time;
++                                transfer_clipboard_data(&xselectionrequest, clipboard_copy);
++                            }
++                            break;
++                        }
++                    }
++                }
++            }
++        });
++    }
++
++    ClipboardX11::~ClipboardX11() {
++        running = false;
++        if(event_thread.joinable())
++            event_thread.join();
++
++        if(file_fd > 0)
++            close(file_fd);
++
++        if(dpy) {
++            XDestroyWindow(dpy, clipboard_window);
++            XCloseDisplay(dpy);
++        }
++    }
++
++    bool ClipboardX11::file_type_matches_request_atom(FileType file_type, Atom request_atom) {
++        switch(file_type) {
++            case FileType::JPG:
++                return request_atom == image_jpg_atom || request_atom == image_jpeg_atom;
++            case FileType::PNG:
++                return request_atom == image_png_atom;
++        }
++        return false;
++    }
++
++    const char* ClipboardX11::file_type_clipboard_get_name(Atom request_atom) {
++        if(request_atom == image_jpg_atom)
++            return "image/jpg";
++        else if(request_atom == image_jpeg_atom)
++            return "image/jpeg";
++        else if(request_atom == image_png_atom)
++            return "image/png";
++        return "Unknown";
++    }
++
++    const char* ClipboardX11::file_type_get_name(FileType file_type) {
++        switch(file_type) {
++            case FileType::JPG:
++                return "image/jpeg";
++            case FileType::PNG:
++                return "image/png";
++        }
++        return "Unknown";
++    }
++
++    void ClipboardX11::send_clipboard_start(XSelectionRequestEvent *xselectionrequest) {
++        std::lock_guard<std::mutex> lock(mutex);
++        if(file_fd <= 0) {
++            fprintf(stderr, "gsr ui: warning: ClipboardX11::send_clipboard: requestor window " FORMAT_I64 " tried to get clipboard from us but we don't have any clipboard file open\n", (int64_t)xselectionrequest->requestor);
++            return;
++        }
++
++        if(xselectionrequest->selection != clipboard_atom) {
++            fprintf(stderr, "gsr ui: warning: ClipboardX11::send_clipboard: requestor window " FORMAT_I64 " tried to non-clipboard selection from us\n", (int64_t)xselectionrequest->requestor);
++            return;
++        }
++
++        XSelectionEvent selection_event;
++        selection_event.type = SelectionNotify;
++        selection_event.display = xselectionrequest->display;
++        selection_event.requestor = xselectionrequest->requestor;
++        selection_event.selection = xselectionrequest->selection;
++        selection_event.property = xselectionrequest->property;
++        selection_event.time = xselectionrequest->time;
++        selection_event.target = xselectionrequest->target;
++
++        if(xselectionrequest->target == targets_atom) {
++            int num_targets = 1;
++            Atom targets[4];
++            targets[0] = targets_atom;
++
++            switch(file_type) {
++                case FileType::JPG:
++                    num_targets = 4;
++                    targets[1] = image_jpg_atom;
++                    targets[2] = image_jpeg_atom;
++                    targets[3] = image_png_atom;
++                    break;
++                case FileType::PNG:
++                    num_targets = 2;
++                    targets[1] = image_png_atom;
++                    targets[2] = image_jpg_atom;
++                    targets[3] = image_jpeg_atom;
++                    break;
++            }
++
++            XChangeProperty(dpy, selection_event.requestor, selection_event.property, XA_ATOM, 32, PropModeReplace, (unsigned char*)targets, num_targets);
++        } else if(xselectionrequest->target == image_jpg_atom || xselectionrequest->target == image_jpeg_atom || xselectionrequest->target == image_png_atom) {
++            // TODO: Convert image to requested image type. Right now sending a jpg file when a png file is requested works ok in browsers (discord and element)
++            if(!file_type_matches_request_atom(file_type, xselectionrequest->target)) {
++                const char *expected_file_type = file_type_get_name(file_type);
++                fprintf(stderr, "gsr ui: warning: ClipboardX11::send_clipboard: requestor window " FORMAT_I64 " tried to request clipboard of type %s, but %s was expected. Ignoring requestor and sending as %s\n", (int64_t)xselectionrequest->requestor, file_type_clipboard_get_name(xselectionrequest->target), expected_file_type, expected_file_type);
++                //return;
++            }
++
++            ClipboardX11Copy *clipboard_copy = get_clipboard_copy_by_requestor(xselectionrequest->requestor);
++            if(!clipboard_copy) {
++                clipboard_copies.push_back({ xselectionrequest->requestor, 0 });
++                clipboard_copy = &clipboard_copies.back();
++            }
++
++            *clipboard_copy = { xselectionrequest->requestor, 0 };
++            clipboard_copy->property = selection_event.property;
++            clipboard_copy->requestor_target = selection_event.target;
++            XSelectInput(dpy, selection_event.requestor, PropertyChangeMask);
++
++            const long lower_bound = std::min((uint64_t)1<<16, file_size);
++            XChangeProperty(dpy, selection_event.requestor, selection_event.property, incr_atom, 32, PropModeReplace, (const unsigned char*)&lower_bound, 1);
++        } else {
++            char *target_clipboard_name = XGetAtomName(dpy, xselectionrequest->target);
++            fprintf(stderr, "gsr ui: warning: ClipboardX11::send_clipboard: requestor window " FORMAT_I64 " tried to request clipboard of type %s, expected TARGETS, image/jpg, image/jpeg or image/png\n", (int64_t)xselectionrequest->requestor, target_clipboard_name ? target_clipboard_name : "Unknown");
++            if(target_clipboard_name)
++                XFree(target_clipboard_name);
++            selection_event.property = None;
++        }
++
++        XSendEvent(dpy, selection_event.requestor, False, NoEventMask, (XEvent*)&selection_event);
++        XFlush(dpy);
++    }
++
++    void ClipboardX11::transfer_clipboard_data(XSelectionRequestEvent *xselectionrequest, ClipboardX11Copy *clipboard_copy) {
++        uint8_t file_buffer[1<<16];
++        ssize_t file_bytes_read = 0;
++
++        if(file_fd <= 0)
++            return;
++
++        if(lseek(file_fd, clipboard_copy->file_offset, SEEK_SET) == -1) {
++            fprintf(stderr, "gsr ui: error: ClipboardX11::send_clipboard: failed to seek in clipboard file to offset " FORMAT_U64 " for requestor window " FORMAT_I64 ", error: %s\n", (uint64_t)clipboard_copy->file_offset, (int64_t)xselectionrequest->requestor, strerror(errno));
++            clipboard_copy->file_offset = 0;
++            // TODO: Cancel transfer
++            return;
++        }
++
++        file_bytes_read = read(file_fd, file_buffer, sizeof(file_buffer));
++        if(file_bytes_read < 0) {
++            fprintf(stderr, "gsr ui: error: ClipbaordX11::send_clipboard: failed to read data from offset " FORMAT_U64 " for requestor window " FORMAT_I64 ", error: %s\n", (uint64_t)clipboard_copy->file_offset, (int64_t)xselectionrequest->requestor, strerror(errno));
++            clipboard_copy->file_offset = 0;
++            // TODO: Cancel transfer
++            return;
++        }
++
++        XChangeProperty(dpy, xselectionrequest->requestor, xselectionrequest->property, xselectionrequest->target, 8, PropModeReplace, (const unsigned char*)file_buffer, file_bytes_read);
++        XSendEvent(dpy, xselectionrequest->requestor, False, NoEventMask, (XEvent*)xselectionrequest);
++        XFlush(dpy);
++
++        clipboard_copy->file_offset += file_bytes_read;
++        if(file_bytes_read == 0)
++            remove_clipboard_copy(clipboard_copy->requestor);
++    }
++
++    ClipboardX11Copy* ClipboardX11::get_clipboard_copy_by_requestor(Window requestor) {
++        for(ClipboardX11Copy &clipboard_copy : clipboard_copies) {
++            if(clipboard_copy.requestor == requestor)
++                return &clipboard_copy;
++        }
++        return nullptr;
++    }
++
++    void ClipboardX11::remove_clipboard_copy(Window requestor) {
++        for(auto it = clipboard_copies.begin(), end = clipboard_copies.end(); it != end; ++it) {
++            if(it->requestor == requestor) {
++                clipboard_copies.erase(it);
++                XSelectInput(dpy, requestor, 0);
++
++                if(clipboard_copies.empty() && should_clear_selection) {
++                    should_clear_selection = false;
++                    set_current_file("", file_type);
++                }
++                return;
++            }
++        }
++    }
++
++    void ClipboardX11::set_current_file(const std::string &filepath, FileType file_type) {
++        if(!dpy)
++            return;
++
++        std::lock_guard<std::mutex> lock(mutex);
++        for(ClipboardX11Copy &clipboard_copy : clipboard_copies) {
++            XSelectInput(dpy, clipboard_copy.requestor, 0);
++        }
++        clipboard_copies.clear();
++
++        if(XGetSelectionOwner(dpy, clipboard_atom) == clipboard_window) {
++            XSetSelectionOwner(dpy, clipboard_atom, None, CurrentTime);
++            XFlush(dpy);
++        }
++
++        if(filepath.empty()) {
++            // TODO: Cancel transfer
++            if(file_fd > 0) {
++                close(file_fd);
++                file_fd = -1;
++            }
++            file_size = 0;
++            return;
++        }
++
++        if(file_fd > 0) {
++            close(file_fd);
++            file_fd = -1;
++            file_size = 0;
++        }
++
++        file_fd = open(filepath.c_str(), O_RDONLY);
++        if(file_fd <= 0) {
++            fprintf(stderr, "gsr ui: error: ClipboardX11::set_current_file: failed to open file %s, error: %s\n", filepath.c_str(), strerror(errno));
++            return;
++        }
++
++        struct stat stat;
++        if(fstat(file_fd, &stat) == -1) {
++            fprintf(stderr, "gsr ui: error: ClipboardX11::set_current_file: failed to get file size for file %s, error: %s\n", filepath.c_str(), strerror(errno));
++            close(file_fd);
++            file_fd = -1;
++            return;
++        }
++        file_size = stat.st_size;
++        this->file_type = file_type;
++
++        XSetSelectionOwner(dpy, clipboard_atom, clipboard_window, CurrentTime);
++        XFlush(dpy);
++    }
++}
+diff --git a/src/Overlay.cpp b/src/Overlay.cpp
+index b251388..e72cf92 100644
+--- a/src/Overlay.cpp
++++ b/src/Overlay.cpp
+@@ -21,6 +21,8 @@
+ #include "../include/GlobalHotkeys/GlobalHotkeysLinux.hpp"
+ #include "../include/CursorTracker/CursorTrackerX11.hpp"
+ #include "../include/CursorTracker/CursorTrackerWayland.hpp"
++#include "../include/Clipboard/ClipboardX11.hpp"
++#include "../include/Clipboard/ClipboardWayland.hpp"
+ #include "../include/RegionSelector/RegionSelectorX11.hpp"
+ #include "../include/RegionSelector/RegionSelectorWayland.hpp"
+ 
+@@ -603,6 +605,11 @@ namespace gsr {
+         else
+             region_selector = std::make_unique<RegionSelectorX11>(x11_dpy);
+ 
++        if(wayland_dpy && ClipboardWayland::is_supported(wayland_dpy))
++            clipboard = std::make_unique<ClipboardWayland>(wayland_dpy);
++        else
++            clipboard = std::make_unique<ClipboardX11>();
++
+         desktop_environment->start();
+         update_led_indicator_after_settings_change();
+ 
+@@ -2167,13 +2174,13 @@ namespace gsr {
+         return replay_duration_sec;
+     }
+ 
+-    static ClipboardFile::FileType filename_to_clipboard_file_type(const std::string &filename) {
++    static Clipboard::FileType filename_to_clipboard_file_type(const std::string &filename) {
+         if(ends_with(filename, ".jpg") || ends_with(filename, ".jpeg"))
+-            return ClipboardFile::FileType::JPG;
++            return Clipboard::FileType::JPG;
+         else if(ends_with(filename, ".png"))
+-            return ClipboardFile::FileType::PNG;
++            return Clipboard::FileType::PNG;
+         assert(false);
+-        return ClipboardFile::FileType::PNG;
++        return Clipboard::FileType::PNG;
+     }
+ 
+     void Overlay::save_video_in_current_game_directory(std::string &video_filepath, NotificationType notification_type) {
+@@ -2454,8 +2461,8 @@ namespace gsr {
+                 show_notification(msg, notification_timeout_seconds, mgl::Color(255, 255, 255), get_color_theme().tint_color, NotificationType::SCREENSHOT, screenshot_capture_target.c_str());
+             }
+ 
+-            if(config.screenshot_config.save_screenshot_to_clipboard)
+-                clipboard_file.set_current_file(screenshot_filepath, filename_to_clipboard_file_type(screenshot_filepath));
++            if(config.screenshot_config.save_screenshot_to_clipboard && clipboard)
++                clipboard->set_current_file(screenshot_filepath, filename_to_clipboard_file_type(screenshot_filepath));
+ 
+             if(led_indicator && config.screenshot_config.use_led_indicator)
+                 led_indicator->blink();
+@@ -3696,7 +3703,8 @@ namespace gsr {
+ 
+         args.push_back(nullptr);
+ 
+-        clipboard_file.set_current_file("", ClipboardFile::FileType::JPG);
++        if(clipboard)
++            clipboard->set_current_file("", Clipboard::FileType::JPG);
+ 
+         screenshot_filepath = output_file;
+         gpu_screen_recorder_screenshot_process = exec_program(args.data(), nullptr);
+-- 
+2.54.0
+
