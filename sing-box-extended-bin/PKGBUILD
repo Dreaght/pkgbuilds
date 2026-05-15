@@ -1,0 +1,56 @@
+# Maintainer: shtorm <sergeimaklagin7#gmail.com>
+
+_pkgname=sing-box
+pkgname=sing-box-extended-bin
+_pkgver="1.13.11-extended-2.1.0"
+pkgver="${_pkgver//-/\~}"
+pkgrel=1
+
+pkgdesc='Sing-box with extended features (binary version).'
+arch=("x86_64" "armv7h" "aarch64")
+url='https://github.com/shtorm-7/sing-box-extended'
+license=("LicenseRef-${pkgname}")
+
+provides=($_pkgname)
+source=("sing-box.service"
+        "sing-box@.service"
+        "sing-box.sysusers"
+        "sing-box.rules"
+        "sing-box-split-dns.xml"
+        "config.json")
+source_x86_64=("sing-box-$_pkgver-linux-amd64.tar.gz::$url/releases/download/v$_pkgver/sing-box-$_pkgver-linux-amd64.tar.gz")
+source_armv7h=("sing-box-$_pkgver-linux-armv7.tar.gz::$url/releases/download/v$_pkgver/sing-box-$_pkgver-linux-armv7.tar.gz")
+source_aarch64=("sing-box-$_pkgver-linux-arm64.tar.gz::$url/releases/download/v$_pkgver/sing-box-$_pkgver-linux-arm64.tar.gz")
+sha256sums=('259fa4ee0a29fb863bd1597eba9392bd9767c679c1e28b8b1ee91ce1ea01c84d'
+            '0b8740010bb3b2a5b65f1cc444b00127372d015f70f272ed566606949ed2b91b'
+            '0d0631619b6f680b9a80b9a8f65c7a30f2565e80279182f63c77854051c5d473'
+            '5a1135cd779a948882702e62b349c19cb72ef56c4af6567bc8f1794ca3b9fbcd'
+            'ebdab3b912603c44b4d76640c5db5c4bc0ca04213d7f34ccaa5e789ba40b426f'
+            '34649a783dafe07c746c54b66218893dedcab0f5a593498415e749f46da3f654')
+sha256sums_x86_64=('4dbfa3c9419dfb2d900d87d15a9c44fcad00ca0be6b1a33b296c591cca8be1c7')
+sha256sums_armv7h=('2f7e1adccce7d3b2e81f36d3fd8d325d6b7fc6087ebd1261452a31424d85e4a6')
+sha256sums_aarch64=('83a500ce0053d844465b5d3d5f4becb931ddeab473c2edb1e1d3cf19ee0e6ca0')
+conflicts=($_pkgname "$_pkgname-git" "$_pkgname-beta" "$_pkgname-extended")
+
+backup=("etc/sing-box/config.json")
+
+
+package() {
+    declare -A ARCH_MAP
+    ARCH_MAP=( [x86_64]="amd64" [armv7h]="armv7" [aarch64]="arm64" )
+
+    install -Dm644 config.json -t "$pkgdir/etc/$_pkgname"
+    install -Dm644 sing-box.service -t "$pkgdir/usr/lib/systemd/system"
+    install -Dm644 sing-box@.service -t "$pkgdir/usr/lib/systemd/system"
+    install -Dm644 sing-box.sysusers "$pkgdir/usr/lib/sysusers.d/$_pkgname.conf"
+    install -Dm644 sing-box.rules -t "$pkgdir/usr/share/polkit-1/rules.d"
+    install -Dm644 sing-box-split-dns.xml "$pkgdir/usr/share/dbus-1/system.d/sing-box-split-dns.conf"
+
+    cd "sing-box-$_pkgver-linux-${ARCH_MAP[$CARCH]}"
+    install -Dm755 sing-box -t "$pkgdir/usr/bin"
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$_pkgname"
+    install -Dm644 <(./sing-box completion bash) "$pkgdir/usr/share/bash-completion/completions/${_pkgname}"
+    install -Dm644 <(./sing-box completion fish) "$pkgdir/usr/share/fish/vendor_completions.d/${_pkgname}.fish"
+    install -Dm644 <(./sing-box completion zsh) "$pkgdir/usr/share/zsh/site-functions/_${_pkgname}"
+}
+
