@@ -1,25 +1,29 @@
-From 84a61e1d95f26ce068e8c788f5356a9b41abcc97 Mon Sep 17 00:00:00 2001
+From 656e4e549ee87d075f33440262706a38871dd103 Mon Sep 17 00:00:00 2001
 From: Dreaght <dreaght@icloud.com>
 Date: Thu, 14 May 2026 07:51:57 +0300
 Subject: [PATCH] Add ext-data-control clipboard and use it if it's available
 
 Signed-off-by: Dreaght <dreaght@icloud.com>
 ---
- include/Clipboard/Clipboard.hpp        |  21 ++
- include/Clipboard/ClipboardWayland.hpp |  24 ++
- include/Clipboard/ClipboardX11.hpp     |  56 +++
- include/Overlay.hpp                    |   6 +-
- meson.build                            |   2 +
- protocol/ext-data-control-v1.xml       | 276 +++++++++++++++
- protocol/meson.build                   |   1 +
- src/Clipboard/ClipboardWayland.cpp     | 453 +++++++++++++++++++++++++
- src/Clipboard/ClipboardX11.cpp         | 316 +++++++++++++++++
- src/Overlay.cpp                        |  22 +-
- 10 files changed, 1167 insertions(+), 10 deletions(-)
+ include/Clipboard/Clipboard.hpp         |  21 ++
+ include/Clipboard/ClipboardTransfer.hpp |  29 ++
+ include/Clipboard/ClipboardWayland.hpp  |  24 ++
+ include/Clipboard/ClipboardX11.hpp      |  56 ++++
+ include/Overlay.hpp                     |   6 +-
+ meson.build                             |   3 +
+ protocol/ext-data-control-v1.xml        | 276 +++++++++++++++++
+ protocol/meson.build                    |   1 +
+ src/Clipboard/ClipboardTransfer.cpp     | 140 +++++++++
+ src/Clipboard/ClipboardWayland.cpp      | 385 ++++++++++++++++++++++++
+ src/Clipboard/ClipboardX11.cpp          | 286 ++++++++++++++++++
+ src/Overlay.cpp                         |  22 +-
+ 12 files changed, 1239 insertions(+), 10 deletions(-)
  create mode 100644 include/Clipboard/Clipboard.hpp
+ create mode 100644 include/Clipboard/ClipboardTransfer.hpp
  create mode 100644 include/Clipboard/ClipboardWayland.hpp
  create mode 100644 include/Clipboard/ClipboardX11.hpp
  create mode 100644 protocol/ext-data-control-v1.xml
+ create mode 100644 src/Clipboard/ClipboardTransfer.cpp
  create mode 100644 src/Clipboard/ClipboardWayland.cpp
  create mode 100644 src/Clipboard/ClipboardX11.cpp
 
@@ -49,6 +53,41 @@ index 0000000..b5d9f70
 +        // Set this to an empty string to unset clipboard
 +        virtual void set_current_file(const std::string &filepath, FileType file_type) = 0;
 +    };
++}
+diff --git a/include/Clipboard/ClipboardTransfer.hpp b/include/Clipboard/ClipboardTransfer.hpp
+new file mode 100644
+index 0000000..f8455bb
+--- /dev/null
++++ b/include/Clipboard/ClipboardTransfer.hpp
+@@ -0,0 +1,29 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <string>
++
++namespace gsr {
++    struct ClipboardTransferFile {
++        ClipboardTransferFile(int fd, uint64_t size);
++        ~ClipboardTransferFile();
++        ClipboardTransferFile(const ClipboardTransferFile&) = delete;
++        ClipboardTransferFile& operator=(const ClipboardTransferFile&) = delete;
++
++        int fd = -1;
++        uint64_t size = 0;
++    };
++
++    using ClipboardTransferFilePtr = std::shared_ptr<ClipboardTransferFile>;
++
++    constexpr int clipboard_transfer_chunk_size = 1 << 16;
++    constexpr int clipboard_transfer_write_timeout_ms = 5000;
++
++    ClipboardTransferFilePtr create_clipboard_transfer_file(const std::string &filepath);
++    bool set_fd_nonblocking(int fd);
++    bool read_clipboard_transfer_chunk(const ClipboardTransferFilePtr &file, uint64_t offset, unsigned char *buffer, size_t buffer_size, ssize_t *bytes_read);
++    bool write_clipboard_transfer_data(int fd, const void *data, size_t size, int timeout_ms);
++    bool transfer_clipboard_transfer_file(const ClipboardTransferFilePtr &file, int output_fd, int timeout_ms);
 +}
 diff --git a/include/Clipboard/ClipboardWayland.hpp b/include/Clipboard/ClipboardWayland.hpp
 new file mode 100644
@@ -82,7 +121,7 @@ index 0000000..1b1dcd1
 +}
 diff --git a/include/Clipboard/ClipboardX11.hpp b/include/Clipboard/ClipboardX11.hpp
 new file mode 100644
-index 0000000..9b3a3b8
+index 0000000..67f8045
 --- /dev/null
 +++ b/include/Clipboard/ClipboardX11.hpp
 @@ -0,0 +1,56 @@
@@ -95,6 +134,7 @@ index 0000000..9b3a3b8
 +#include <X11/Xlib.h>
 +
 +#include "Clipboard.hpp"
++#include "ClipboardTransfer.hpp"
 +
 +namespace gsr {
 +    struct ClipboardX11Copy {
@@ -123,8 +163,7 @@ index 0000000..9b3a3b8
 +    private:
 +        Display *dpy = nullptr;
 +        Window clipboard_window = None;
-+        int file_fd = -1;
-+        uint64_t file_size = 0;
++        ClipboardTransferFilePtr current_file;
 +        FileType file_type = FileType::JPG;
 +
 +        Atom incr_atom = None;
@@ -171,13 +210,14 @@ index ff4d148..170ce59 100644
 \ No newline at end of file
 +}
 diff --git a/meson.build b/meson.build
-index 41c7159..bfec4f7 100644
+index 3d5bc00..c9a3ce9 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -49,6 +49,8 @@ src = [
+@@ -49,6 +49,9 @@ src = [
      'src/Utils.cpp',
      'src/WindowUtils.cpp',
      'src/WaylandHostBridge.cpp',
++    'src/Clipboard/ClipboardTransfer.cpp',
 +    'src/Clipboard/ClipboardX11.cpp',
 +    'src/Clipboard/ClipboardWayland.cpp',
      'src/Config.cpp',
@@ -477,26 +517,170 @@ index ee603c3..e8f6ddb 100644
  ]
  
  protocol_src = []
+diff --git a/src/Clipboard/ClipboardTransfer.cpp b/src/Clipboard/ClipboardTransfer.cpp
+new file mode 100644
+index 0000000..47eb239
+--- /dev/null
++++ b/src/Clipboard/ClipboardTransfer.cpp
+@@ -0,0 +1,140 @@
++#include "../../include/Clipboard/ClipboardTransfer.hpp"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace gsr {
++    namespace {
++        static bool set_fd_cloexec(int fd) {
++            const int flags = fcntl(fd, F_GETFD);
++            if(flags < 0)
++                return false;
++
++            if(flags & FD_CLOEXEC)
++                return true;
++
++            return fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
++        }
++
++        static bool wait_until_writable(int fd, int timeout_ms) {
++            pollfd poll_fd;
++            poll_fd.fd = fd;
++            poll_fd.events = POLLOUT;
++            poll_fd.revents = 0;
++
++            while(true) {
++                const int poll_result = poll(&poll_fd, 1, timeout_ms);
++                if(poll_result > 0)
++                    return (poll_fd.revents & (POLLOUT | POLLERR | POLLHUP)) == POLLOUT;
++
++                if(poll_result == 0) {
++                    errno = ETIMEDOUT;
++                    return false;
++                }
++
++                if(errno != EINTR)
++                    return false;
++            }
++        }
++    }
++
++    ClipboardTransferFile::ClipboardTransferFile(int fd, uint64_t size) : fd(fd), size(size) {}
++
++    ClipboardTransferFile::~ClipboardTransferFile() {
++        if(fd >= 0)
++            close(fd);
++    }
++
++    ClipboardTransferFilePtr create_clipboard_transfer_file(const std::string &filepath) {
++        if(filepath.empty()) {
++            errno = EINVAL;
++            return {};
++        }
++
++        const int input_fd = open(filepath.c_str(), O_RDONLY | O_CLOEXEC);
++        if(input_fd < 0)
++            return {};
++
++        if(!set_fd_cloexec(input_fd)) {
++            close(input_fd);
++            return {};
++        }
++
++        struct stat stat;
++        if(fstat(input_fd, &stat) == -1) {
++            close(input_fd);
++            return {};
++        }
++
++        return std::make_shared<ClipboardTransferFile>(input_fd, stat.st_size);
++    }
++
++    bool set_fd_nonblocking(int fd) {
++        const int flags = fcntl(fd, F_GETFL);
++        if(flags < 0)
++            return false;
++
++        if(flags & O_NONBLOCK)
++            return true;
++
++        return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
++    }
++
++    bool read_clipboard_transfer_chunk(const ClipboardTransferFilePtr &file, uint64_t offset, unsigned char *buffer, size_t buffer_size, ssize_t *bytes_read) {
++        if(!file || file->fd < 0 || !buffer || !bytes_read) {
++            errno = EINVAL;
++            return false;
++        }
++
++        while(true) {
++            *bytes_read = pread(file->fd, buffer, buffer_size, offset);
++            if(*bytes_read < 0 && errno == EINTR)
++                continue;
++            return *bytes_read >= 0;
++        }
++    }
++
++    bool write_clipboard_transfer_data(int fd, const void *data, size_t size, int timeout_ms) {
++        const unsigned char *ptr = (const unsigned char*)data;
++        while(size > 0) {
++            const ssize_t bytes_written = write(fd, ptr, size);
++            if(bytes_written < 0) {
++                if(errno == EINTR)
++                    continue;
++
++                if(errno == EAGAIN || errno == EWOULDBLOCK) {
++                    if(wait_until_writable(fd, timeout_ms))
++                        continue;
++                }
++
++                return false;
++            }
++
++            ptr += bytes_written;
++            size -= bytes_written;
++        }
++        return true;
++    }
++
++    bool transfer_clipboard_transfer_file(const ClipboardTransferFilePtr &file, int output_fd, int timeout_ms) {
++        unsigned char buffer[clipboard_transfer_chunk_size];
++        uint64_t offset = 0;
++        while(true) {
++            ssize_t bytes_read = 0;
++            if(!read_clipboard_transfer_chunk(file, offset, buffer, sizeof(buffer), &bytes_read))
++                return false;
++
++            if(bytes_read == 0)
++                return true;
++
++            if(!write_clipboard_transfer_data(output_fd, buffer, bytes_read, timeout_ms))
++                return false;
++
++            offset += bytes_read;
++        }
++    }
++}
 diff --git a/src/Clipboard/ClipboardWayland.cpp b/src/Clipboard/ClipboardWayland.cpp
 new file mode 100644
-index 0000000..4852b47
+index 0000000..f0922e4
 --- /dev/null
 +++ b/src/Clipboard/ClipboardWayland.cpp
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,385 @@
 +#include "../../include/Clipboard/ClipboardWayland.hpp"
++#include "../../include/Clipboard/ClipboardTransfer.hpp"
 +
 +#include <stdio.h>
 +#include <errno.h>
 +#include <string.h>
 +#include <unistd.h>
-+#include <fcntl.h>
-+#include <poll.h>
 +#include <deque>
 +#include <memory>
 +#include <mutex>
 +#include <condition_variable>
 +#include <thread>
-+#include <vector>
 +
 +#include <wayland-client.h>
 +#include "ext-data-control-v1-client-protocol.h"
@@ -510,56 +694,6 @@ index 0000000..4852b47
 +        struct ClipboardProbe {
 +            bool found = false;
 +        };
-+
-+        static bool write_all(int fd, const void *data, size_t size) {
-+            const unsigned char *ptr = (const unsigned char*)data;
-+            while(size > 0) {
-+                const ssize_t bytes_written = write(fd, ptr, size);
-+                if(bytes_written < 0) {
-+                    if(errno == EINTR)
-+                        continue;
-+                    return false;
-+                }
-+
-+                ptr += bytes_written;
-+                size -= bytes_written;
-+            }
-+            return true;
-+        }
-+
-+        static std::shared_ptr<std::vector<unsigned char>> load_file_contents(const std::string &filepath) {
-+            unsigned char buffer[1 << 16];
-+
-+            const int file_fd = open(filepath.c_str(), O_RDONLY);
-+            if(file_fd < 0)
-+                return {};
-+
-+            auto result = std::make_shared<std::vector<unsigned char>>();
-+            while(true) {
-+                const ssize_t bytes_read = read(file_fd, buffer, sizeof(buffer));
-+                if(bytes_read < 0) {
-+                    if(errno == EINTR)
-+                        continue;
-+                    result.reset();
-+                    break;
-+                }
-+
-+                if(bytes_read == 0)
-+                    break;
-+
-+                result->insert(result->end(), buffer, buffer + bytes_read);
-+            }
-+
-+            close(file_fd);
-+            return result;
-+        }
-+
-+        static bool send_file_contents(const std::shared_ptr<std::vector<unsigned char>> &file_data, int fd) {
-+            if(!file_data)
-+                return false;
-+
-+            return write_all(fd, file_data->data(), file_data->size());
-+        }
 +
 +        void clipboard_offer_offer(void*, struct ext_data_control_offer_v1*, const char*) {}
 +
@@ -595,37 +729,45 @@ index 0000000..4852b47
 +        ClipboardOffer *primary_selection_offer = nullptr;
 +
 +        struct PendingSend {
-+            std::shared_ptr<std::vector<unsigned char>> file_data;
++            ClipboardTransferFilePtr file;
 +            int fd = -1;
 +        };
 +
-+        std::string current_filepath;
-+        FileType current_file_type = FileType::PNG;
-+        std::shared_ptr<std::vector<unsigned char>> current_file_data;
++        ClipboardTransferFilePtr current_file;
 +        std::deque<PendingSend> pending_sends;
 +        std::mutex mutex;
 +        std::condition_variable condition_variable;
 +        std::thread send_thread;
-+        std::thread event_thread;
 +        bool running = false;
 +        bool failed = false;
 +
 +        ~Impl() { teardown(); }
-+        bool init();
++        bool init(wl_display *display);
 +        void teardown();
 +        void destroy_source();
 +        void destroy_offer(ClipboardOffer *offer);
 +        void clear_selection();
 +        void send_loop();
-+        void event_loop();
 +    };
 +
 +    namespace {
-+        void source_send(void *data, struct ext_data_control_source_v1*, const char*, int32_t fd) {
++        void source_send(void *data, struct ext_data_control_source_v1 *source, const char*, int32_t fd) {
 +            ClipboardWayland::Impl *impl = (ClipboardWayland::Impl*)data;
++            if(!set_fd_nonblocking(fd)) {
++                close(fd);
++                return;
++            }
++
++            ClipboardTransferFilePtr current_file;
 +            {
 +                std::lock_guard<std::mutex> lock(impl->mutex);
-+                impl->pending_sends.push_back({ impl->current_file_data, fd });
++                current_file = impl->current_file;
++                if(!current_file || impl->source != source) {
++                    close(fd);
++                    return;
++                }
++
++                impl->pending_sends.push_back({ std::move(current_file), fd });
 +            }
 +            impl->condition_variable.notify_one();
 +        }
@@ -709,8 +851,8 @@ index 0000000..4852b47
 +        };
 +    }
 +
-+    bool ClipboardWayland::Impl::init() {
-+        display = wl_display_connect(nullptr);
++    bool ClipboardWayland::Impl::init(wl_display *wayland_display) {
++        display = wayland_display;
 +        if(!display) {
 +            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to connect to the Wayland server\n");
 +            failed = true;
@@ -749,27 +891,7 @@ index 0000000..4852b47
 +        ext_data_control_device_v1_add_listener(device, &device_listener, this);
 +        running = true;
 +        send_thread = std::thread([this] { send_loop(); });
-+        event_thread = std::thread([this] { event_loop(); });
 +        return true;
-+    }
-+
-+    void ClipboardWayland::Impl::event_loop() {
-+        struct pollfd poll_fd;
-+        poll_fd.fd = wl_display_get_fd(display);
-+        poll_fd.events = POLLIN;
-+        poll_fd.revents = 0;
-+
-+        while(running) {
-+            wl_display_dispatch_pending(display);
-+            wl_display_flush(display);
-+
-+            poll_fd.revents = 0;
-+            if(poll(&poll_fd, 1, 100) <= 0)
-+                continue;
-+
-+            if(wl_display_dispatch(display) < 0)
-+                break;
-+        }
 +    }
 +
 +    void ClipboardWayland::Impl::send_loop() {
@@ -785,9 +907,8 @@ index 0000000..4852b47
 +                pending_sends.pop_front();
 +            }
 +
-+            if(!send_file_contents(pending_send.file_data, pending_send.fd)) {
++            if(!transfer_clipboard_transfer_file(pending_send.file, pending_send.fd, clipboard_transfer_write_timeout_ms))
 +                fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to send clipboard data, error: %s\n", strerror(errno));
-+            }
 +            close(pending_send.fd);
 +        }
 +    }
@@ -815,8 +936,9 @@ index 0000000..4852b47
 +        if(device)
 +            ext_data_control_device_v1_set_selection(device, nullptr);
 +        destroy_source();
-+        current_filepath.clear();
-+        current_file_data.reset();
++
++        std::lock_guard<std::mutex> lock(mutex);
++        current_file.reset();
 +    }
 +
 +    void ClipboardWayland::Impl::teardown() {
@@ -827,8 +949,6 @@ index 0000000..4852b47
 +        condition_variable.notify_all();
 +        if(send_thread.joinable())
 +            send_thread.join();
-+        if(event_thread.joinable())
-+            event_thread.join();
 +
 +        for(PendingSend &pending_send : pending_sends) {
 +            if(pending_send.fd >= 0)
@@ -865,11 +985,7 @@ index 0000000..4852b47
 +            registry = nullptr;
 +        }
 +
-+        if(display) {
-+            wl_display_disconnect(display);
-+            display = nullptr;
-+        }
-+        current_filepath.clear();
++        display = nullptr;
 +    }
 +
 +    bool ClipboardWayland::is_supported(wl_display *dpy) {
@@ -887,8 +1003,8 @@ index 0000000..4852b47
 +        return probe.found;
 +    }
 +
-+    ClipboardWayland::ClipboardWayland(wl_display*) : impl(std::make_unique<Impl>()) {
-+        impl->init();
++    ClipboardWayland::ClipboardWayland(wl_display *display) : impl(std::make_unique<Impl>()) {
++        impl->init(display);
 +    }
 +
 +    ClipboardWayland::~ClipboardWayland() = default;
@@ -904,20 +1020,22 @@ index 0000000..4852b47
 +            return;
 +        }
 +
-+        impl->current_filepath = filepath;
-+        impl->current_file_type = file_type;
-+        impl->current_file_data = load_file_contents(filepath);
-+        if(!impl->current_file_data) {
-+            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to read clipboard file %s, error: %s\n", filepath.c_str(), strerror(errno));
-+            impl->current_filepath.clear();
++        const ClipboardTransferFilePtr current_file = create_clipboard_transfer_file(filepath);
++        if(!current_file) {
++            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to open clipboard file %s, error: %s\n", filepath.c_str(), strerror(errno));
 +            return;
++        }
++
++        {
++            std::lock_guard<std::mutex> lock(impl->mutex);
++            impl->current_file = current_file;
 +        }
 +
 +        impl->source = ext_data_control_manager_v1_create_data_source(impl->manager);
 +        if(!impl->source) {
 +            fprintf(stderr, "gsr ui: error: ClipboardWayland: failed to create data source\n");
-+            impl->current_filepath.clear();
-+            impl->current_file_data.reset();
++            std::lock_guard<std::mutex> lock(impl->mutex);
++            impl->current_file.reset();
 +            return;
 +        }
 +
@@ -938,10 +1056,10 @@ index 0000000..4852b47
 +}
 diff --git a/src/Clipboard/ClipboardX11.cpp b/src/Clipboard/ClipboardX11.cpp
 new file mode 100644
-index 0000000..36b4f4b
+index 0000000..1dde567
 --- /dev/null
 +++ b/src/Clipboard/ClipboardX11.cpp
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,286 @@
 +#include "../../include/Clipboard/ClipboardX11.hpp"
 +#include <stdio.h>
 +#include <errno.h>
@@ -1039,9 +1157,6 @@ index 0000000..36b4f4b
 +        if(event_thread.joinable())
 +            event_thread.join();
 +
-+        if(file_fd > 0)
-+            close(file_fd);
-+
 +        if(dpy) {
 +            XDestroyWindow(dpy, clipboard_window);
 +            XCloseDisplay(dpy);
@@ -1080,7 +1195,7 @@ index 0000000..36b4f4b
 +
 +    void ClipboardX11::send_clipboard_start(XSelectionRequestEvent *xselectionrequest) {
 +        std::lock_guard<std::mutex> lock(mutex);
-+        if(file_fd <= 0) {
++        if(!current_file) {
 +            fprintf(stderr, "gsr ui: warning: ClipboardX11::send_clipboard: requestor window " FORMAT_I64 " tried to get clipboard from us but we don't have any clipboard file open\n", (int64_t)xselectionrequest->requestor);
 +            return;
 +        }
@@ -1139,7 +1254,7 @@ index 0000000..36b4f4b
 +            clipboard_copy->requestor_target = selection_event.target;
 +            XSelectInput(dpy, selection_event.requestor, PropertyChangeMask);
 +
-+            const long lower_bound = std::min((uint64_t)1<<16, file_size);
++            const long lower_bound = std::min((uint64_t)clipboard_transfer_chunk_size, current_file->size);
 +            XChangeProperty(dpy, selection_event.requestor, selection_event.property, incr_atom, 32, PropModeReplace, (const unsigned char*)&lower_bound, 1);
 +        } else {
 +            char *target_clipboard_name = XGetAtomName(dpy, xselectionrequest->target);
@@ -1157,18 +1272,10 @@ index 0000000..36b4f4b
 +        uint8_t file_buffer[1<<16];
 +        ssize_t file_bytes_read = 0;
 +
-+        if(file_fd <= 0)
++        if(!current_file)
 +            return;
 +
-+        if(lseek(file_fd, clipboard_copy->file_offset, SEEK_SET) == -1) {
-+            fprintf(stderr, "gsr ui: error: ClipboardX11::send_clipboard: failed to seek in clipboard file to offset " FORMAT_U64 " for requestor window " FORMAT_I64 ", error: %s\n", (uint64_t)clipboard_copy->file_offset, (int64_t)xselectionrequest->requestor, strerror(errno));
-+            clipboard_copy->file_offset = 0;
-+            // TODO: Cancel transfer
-+            return;
-+        }
-+
-+        file_bytes_read = read(file_fd, file_buffer, sizeof(file_buffer));
-+        if(file_bytes_read < 0) {
++        if(!read_clipboard_transfer_chunk(current_file, clipboard_copy->file_offset, file_buffer, sizeof(file_buffer), &file_bytes_read)) {
 +            fprintf(stderr, "gsr ui: error: ClipbaordX11::send_clipboard: failed to read data from offset " FORMAT_U64 " for requestor window " FORMAT_I64 ", error: %s\n", (uint64_t)clipboard_copy->file_offset, (int64_t)xselectionrequest->requestor, strerror(errno));
 +            clipboard_copy->file_offset = 0;
 +            // TODO: Cancel transfer
@@ -1224,34 +1331,15 @@ index 0000000..36b4f4b
 +
 +        if(filepath.empty()) {
 +            // TODO: Cancel transfer
-+            if(file_fd > 0) {
-+                close(file_fd);
-+                file_fd = -1;
-+            }
-+            file_size = 0;
++            current_file.reset();
 +            return;
 +        }
 +
-+        if(file_fd > 0) {
-+            close(file_fd);
-+            file_fd = -1;
-+            file_size = 0;
-+        }
-+
-+        file_fd = open(filepath.c_str(), O_RDONLY);
-+        if(file_fd <= 0) {
++        current_file = create_clipboard_transfer_file(filepath);
++        if(!current_file) {
 +            fprintf(stderr, "gsr ui: error: ClipboardX11::set_current_file: failed to open file %s, error: %s\n", filepath.c_str(), strerror(errno));
 +            return;
 +        }
-+
-+        struct stat stat;
-+        if(fstat(file_fd, &stat) == -1) {
-+            fprintf(stderr, "gsr ui: error: ClipboardX11::set_current_file: failed to get file size for file %s, error: %s\n", filepath.c_str(), strerror(errno));
-+            close(file_fd);
-+            file_fd = -1;
-+            return;
-+        }
-+        file_size = stat.st_size;
 +        this->file_type = file_type;
 +
 +        XSetSelectionOwner(dpy, clipboard_atom, clipboard_window, CurrentTime);
@@ -1259,7 +1347,7 @@ index 0000000..36b4f4b
 +    }
 +}
 diff --git a/src/Overlay.cpp b/src/Overlay.cpp
-index b251388..e72cf92 100644
+index 057e823..a423f5b 100644
 --- a/src/Overlay.cpp
 +++ b/src/Overlay.cpp
 @@ -21,6 +21,8 @@

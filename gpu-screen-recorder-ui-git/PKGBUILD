@@ -2,7 +2,7 @@
 
 _pkgname="gpu-screen-recorder-ui"
 pkgname="$_pkgname-git"
-pkgver=1.12.0.r1.ga4e3f58
+pkgver=1.12.0.r5.g2544249
 pkgrel=1
 pkgdesc="A fullscreen overlay UI for GPU Screen Recorder in the style of ShadowPlay"
 url="https://git.dec05eba.com/gpu-screen-recorder-ui"
@@ -35,47 +35,18 @@ provides=("$_pkgname")
 conflicts=("$_pkgname")
 
 _pkgsrc="$_pkgname"
-source=("$_pkgsrc"::"git+$(sed 's&//git\.&//repo.&' <<< "$url")"
-	"mglpp"::"git+https://repo.dec05eba.com/mglpp"
-	"mgl"::"git+https://repo.dec05eba.com/mgl"
-	"0001-Add-ext-data-control-clipboard.patch"
-	"0001-Switch-to-v1-bind_version.patch")
+source=(
+    "$_pkgsrc"::"git+$(sed 's&//git\.&//repo.&' <<< "$url")"
+    "0002-Add-ext-data-control-clipboard.patch")
 sha256sums=('SKIP'
-            'SKIP'
-            'SKIP'
-            'd4e809c66e00297d01b671ecdd5fa354b7a10cbba5930719e327604d56924400'
-            'b4f72c7dc79b44998ff80df475777a6f65f27df0e0d677095404943c1b6875bd')
+            'cb71623551916ee2f7bddb6b0b7893d5867ee1df877d0bb956d0e53cc1a0e0f5')
 
 prepare() {
-    local desired_mglpp_rev desired_mgl_rev
-
-    desired_mglpp_rev=$(git -C "${srcdir}/${_pkgsrc}" ls-tree HEAD depends/mglpp | awk '{print $3}')
-    if [[ -n "$desired_mglpp_rev" ]]; then
-        git -C "${srcdir}/mglpp" checkout --force "$desired_mglpp_rev"
-    fi
-
-    rm -rf "${srcdir}/${_pkgsrc}/depends/mglpp"
-    cp -a "${srcdir}/mglpp" "${srcdir}/${_pkgsrc}/depends/mglpp"
-
-    desired_mgl_rev=$(git -C "${srcdir}/${_pkgsrc}/depends/mglpp" ls-tree HEAD depends/mgl | awk '{print $3}')
-    if [[ -n "$desired_mgl_rev" ]]; then
-        git -C "${srcdir}/mgl" checkout --force "$desired_mgl_rev"
-    fi
-
-    rm -rf "${srcdir}/${_pkgsrc}/depends/mglpp/depends/mgl"
-    cp -a "${srcdir}/mgl" "${srcdir}/${_pkgsrc}/depends/mglpp/depends/mgl"
-
     patch \
         --forward \
         --strip=1 \
         -d "${srcdir}/${_pkgsrc}" \
-        --input="${srcdir}/0001-Add-ext-data-control-clipboard.patch"
-
-    patch \
-        --forward \
-        --strip=1 \
-        -d "${srcdir}/${_pkgsrc}/depends/mglpp/depends/mgl" \
-        --input="${srcdir}/0001-Switch-to-v1-bind_version.patch"
+        --input="${srcdir}/0002-Add-ext-data-control-clipboard.patch"
 }
 
 pkgver() {
@@ -96,3 +67,4 @@ package() {
   )
   meson install -C build --destdir "$pkgdir"
 }
+
