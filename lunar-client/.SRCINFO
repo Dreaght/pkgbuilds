@@ -1,0 +1,16 @@
+pkgbase = lunar-client
+	pkgdesc = PvP modpack for all modern versions of Minecraft
+	pkgver = 3.6.10
+	pkgrel = 2
+	url = https://lunarclient.com
+	arch = x86_64
+	license = unknown
+	depends = fuse
+	depends = xorg-xrandr
+	optdepends = gvfs: support opening URL links in the default browser from Minecraft
+	options = !strip
+	options = !debug
+	source = https://launcherupdates.lunarclientcdn.com/Lunar%20Client-3.6.10-ow.AppImage
+	sha256sums = b82338e80950266d149c9796e36a21a891bd826ca1e7cf6d9d733a627829b717
+
+pkgname = lunar-client

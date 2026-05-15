@@ -13,3 +13,4 @@
 
 # hidden dotfiles
 .*
+!**/.SRCINFO
