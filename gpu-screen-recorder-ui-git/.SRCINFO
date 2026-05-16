@@ -1,6 +1,6 @@
 pkgbase = gpu-screen-recorder-ui-git
 	pkgdesc = A fullscreen overlay UI for GPU Screen Recorder in the style of ShadowPlay
-	pkgver = 1.11.5.r0.geb6aed9
+	pkgver = 1.12.0.r5.g2544249
 	pkgrel = 1
 	url = https://git.dec05eba.com/gpu-screen-recorder-ui
 	arch = x86_64
@@ -25,9 +25,7 @@ pkgbase = gpu-screen-recorder-ui-git
 	provides = gpu-screen-recorder-ui
 	conflicts = gpu-screen-recorder-ui
 	source = gpu-screen-recorder-ui::git+https://repo.dec05eba.com/gpu-screen-recorder-ui
-	source = 0002-Add-ext-data-control-clipboard.patch
 	sha256sums = SKIP
-	sha256sums = cb71623551916ee2f7bddb6b0b7893d5867ee1df877d0bb956d0e53cc1a0e0f5
 
 pkgname = gpu-screen-recorder-ui-git
 	depends = dbus

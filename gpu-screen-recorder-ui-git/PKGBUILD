@@ -37,17 +37,8 @@ conflicts=("$_pkgname")
 _pkgsrc="$_pkgname"
 source=(
     "$_pkgsrc"::"git+$(sed 's&//git\.&//repo.&' <<< "$url")"
-    "0002-Add-ext-data-control-clipboard.patch")
-sha256sums=('SKIP'
-            'cb71623551916ee2f7bddb6b0b7893d5867ee1df877d0bb956d0e53cc1a0e0f5')
-
-prepare() {
-    patch \
-        --forward \
-        --strip=1 \
-        -d "${srcdir}/${_pkgsrc}" \
-        --input="${srcdir}/0002-Add-ext-data-control-clipboard.patch"
-}
+    )
+sha256sums=('SKIP')
 
 pkgver() {
   cd "$_pkgsrc"
