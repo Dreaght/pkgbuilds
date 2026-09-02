@@ -6,17 +6,22 @@ Collection of PKGBUILDs and related files for Arch Linux packages.
 
 Build a package from its directory with:
 
-```bash
+```sh
 makepkg -Csi
+```
+
+Update .SRCINFO:
+```sh
+makepkg --printsrcinfo > .SRCINFO
 ```
 
 Refresh [`yay`](https://github.com/jguer/yay):
 
-```bash
+```sh
 yay -Y --gendb
 ```
 
 For upgrade do once:
-```
+```sh
 yay -Y --gendb --devel --save
 ```
